@@ -1,0 +1,9 @@
+{
+	"authors": [
+		"Dmitry Olshansky"
+	],
+	"copyright": "Copyright © 2025, Dmitry Olshansky",
+	"description": "Compile-time mustache template engine for photon-http or standalone",
+	"license": "BSL-1.0",
+	"name": "photon-mustache"
+}
