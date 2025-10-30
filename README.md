@@ -26,12 +26,12 @@ struct Context {
   bool in_ca;
 }
 
-static template = mustache!(import("template.mustache"), Context);
+static templ = mustache!(import("template.mustache"), Context);
 
 void writeTemplate()
 {
   auto ctx = Context("Chris", 1000, 1000 - 0.4 * 1000, true);
-  template(ctx, lockingTextWriter(stdout));
+  templ(ctx, lockingTextWriter(stdout));
 }
 ```
 
