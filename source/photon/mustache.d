@@ -12,21 +12,31 @@ if (isOutputRange!(Output, char)) {
     static if (is(T : long)) {
         toStr(value, output);
     } else if (is(T : const(char)[])) {
-        foreach (char c; value) {
+        size_t last = 0;
+        foreach (i, char c; value) {
             if (c == '&') {
+                output.put(value[last..i]);
+                last = i + 1;
                 output.put("&amp;");
             } else if (c == '<') {
+                output.put(value[last..i]);
+                last = i + 1;
                 output.put("&lt;");
             } else if (c == '>') {
+                output.put(value[last..i]);
+                last = i + 1;
                 output.put("&gt;");
             } else if (c == '"') {
+                output.put(value[last..i]);
+                last = i + 1;
                 output.put("&quot;");
             } else if (c == '\'') {
+                output.put(value[last..i]);
+                last = i + 1;
                 output.put("&#39;");
-            } else {
-                output.put(c);
             }
         }
+        output.put(value[last..$]);
     }
     else {
         import std.conv;
@@ -46,6 +56,7 @@ unittest {
     assert("<html>".htmlEscaped == "&lt;html&gt;");
     assert("\"class\"".htmlEscaped == "&quot;class&quot;");
     assert("a&'b".htmlEscaped == "a&amp;&#39;b");
+    assert("a&b&c".htmlEscaped == "a&amp;b&amp;c");
 }
 
 void toStr(Output)(long value, ref Output output) {
