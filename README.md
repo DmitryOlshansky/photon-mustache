@@ -26,12 +26,13 @@ struct Context {
   bool in_ca;
 }
 
-static templ = mustache!(import("template.mustache"), Context);
+alias templ = mustache!(import("template.mustache"));
 
-void writeTemplate()
+void main()
 {
   auto ctx = Context("Chris", 1000, 1000 - 0.4 * 1000, true);
-  templ(ctx, lockingTextWriter(stdout));
+  auto writer = stdout.lockingTextWriter();
+  templ(ctx, writer);
 }
 ```
 

@@ -239,8 +239,8 @@ pure @safe:
                 gen.decIndent();
                 gen.putLine("} else {");
                 gen.incIndent();
-                gen.putLine("auto "~nextContext~" = "~variableRef(context, section)~";");
-                gen.putLine("if (hasValue("~nextContext~")) {");
+                gen.putLine("auto "~nextContext~" = "~context~";");
+                gen.putLine("if (hasValue("~variableRef(context, section)~")) {");
                 gen.incIndent();
                 foreach (node; nodes) {
                     node.compile(gen);
@@ -341,7 +341,7 @@ pure @safe:
             type = TagType.SECTION_CLOSE;
         } else if (slice.startsWith("=") && slice.endsWith("=") && slice.length > 1) {
             slice = slice[1..$-1];
-        } else if (slice == "." || (slice[0].isAlpha() && slice.all!(c => c.isAlpha || c.isNumber))) {
+        } else if (slice == "." || ((slice[0].isAlpha() || slice[0] == '_') && slice.all!(c => c.isAlpha || c == '_' || c.isNumber))) {
             type = TagType.VAR;
         } else {
             enforce(false, "unknown tag type `"~slice~"`");
