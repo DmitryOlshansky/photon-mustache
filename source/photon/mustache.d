@@ -3,17 +3,24 @@ module photon.mustache;
 import std.array;
 import std.range.primitives;
 
-pure @safe:
-
-template mustache(alias templ, C) {
-    mixin(parseAndEmit!C(templ));
+template mustache(alias templ) {
+    bool hasValue(T)(T value) {
+        static if(is(T : bool)) {
+            return value;
+        } else {
+            return !value.empty;
+        }
+    }
+    enum code = parseAndEmit(templ);
+    //pragma(msg, code);
+    mixin(code);
 }
 
 void htmlEscape(T, Output)(T value, ref Output output)
 if (isOutputRange!(Output, char)) {
     static if (is(T : long)) {
         toStr(value, output);
-    } else if (is(T : const(char)[])) {
+    } else static if (is(T : const(char)[])) {
         size_t last = 0;
         foreach (i, char c; value) {
             if (c == '&') {
@@ -45,6 +52,7 @@ if (isOutputRange!(Output, char)) {
         htmlEscape(value.to!string, output);
     }
 }
+pure @safe:
 
 private:
 
@@ -116,16 +124,17 @@ struct Tag {
 }
 
 struct ContextState {
+pure @safe:
     import std.conv;
     int depth;
 
-    string context() => depth == 0 ? "context" : "c"~to!string(depth);
+    string context() => depth == 0 ? "context" : "__c"~to!string(depth);
 }
 
 interface Node {
 pure @safe:
     void prettyPrint(ref Appender!(char[]) output, int indent = 0);
-    void propagateContext(ref ContextState cs) {}
+    void propagateContext(ref ContextState cs);
     void compile(ref CodeGen gen);
 }
 
@@ -144,6 +153,8 @@ pure @safe:
     this(string text) {
         this.text = text;
     }
+
+    override void propagateContext(ref ContextState cs){}
 
     override void compile(ref CodeGen gen) {
         gen.putLine("sink.put(\""~escaped(text)~"\");");
@@ -171,7 +182,7 @@ pure @safe:
     }
 
     override void compile(ref CodeGen gen) {
-        gen.putLine("htmlEscape(sink, "~variableRef(varPath)~");");
+        gen.putLine("htmlEscape("~variableRef(context, varPath)~", sink);");
     }
 
     void prettyPrint(ref Appender!(char[]) output, int indent) {
@@ -185,13 +196,15 @@ pure @safe:
 class Section : Node {
 pure @safe:
     string context;
+    string nextContext;
     string section;
-    bool inverted;
+    bool inverted, root;
     Node[] nodes;
 
-    this(string section, bool inverted) {
+    this(string section, bool inverted, bool root=false) {
         this.section = section;
         this.inverted = inverted;
+        this.root = root;
     }
 
     void addNode(Node node) {
@@ -199,18 +212,63 @@ pure @safe:
     }
 
     override void compile(ref CodeGen gen) {
-        if (inverted) {
-            gen.put()
+        if (root) {
+            foreach (node; nodes) {
+                node.compile(gen);
+            }
+        } else {
+            if (inverted) {
+                gen.putLine("if (!hasValue("~variableRef(context, section)~")) {");
+                gen.incIndent();
+                gen.putLine("auto "~nextContext~" = "~context~";");
+                foreach (node; nodes) {
+                    node.compile(gen);
+                }
+                gen.decIndent();
+                gen.putLine("}");
+            } else {
+                gen.putLine("static if(__traits(compiles, (){typeof("~variableRef(context, section)~") v; foreach(_; v){}})) {");
+                gen.incIndent();
+                gen.putLine("foreach("~nextContext~"; "~variableRef(context, section)~"){");
+                gen.incIndent();
+                foreach (node; nodes) {
+                    node.compile(gen);
+                }
+                gen.decIndent();
+                gen.putLine("}");
+                gen.decIndent();
+                gen.putLine("} else {");
+                gen.incIndent();
+                gen.putLine("auto "~nextContext~" = "~variableRef(context, section)~";");
+                gen.putLine("if (hasValue("~nextContext~")) {");
+                gen.incIndent();
+                foreach (node; nodes) {
+                    node.compile(gen);
+                }
+                gen.decIndent();
+                gen.putLine("}");
+                gen.decIndent();
+                gen.putLine("}");
+            }
         }
     }
 
     void propagateContext(ref ContextState cs) {
-        context = cs.context;
-        cs.depth++;
-        foreach (node; nodes) {
-            node.propagateContext(cs);
+        if (root) {
+            nextContext = context;
+            foreach (node; nodes) {
+                node.propagateContext(cs);
+            }
         }
-        cs.depth--;
+        else {
+            context = cs.context;
+            cs.depth++;
+            nextContext = cs.context;
+            foreach (node; nodes) {
+                node.propagateContext(cs);
+            }
+            cs.depth--;
+        }
     }
 
     void prettyPrint(ref Appender!(char[]) output, int indent) {
@@ -239,7 +297,7 @@ struct Parser {
 pure @safe:
     this(string input) {
         templ = input;
-        sections ~= new Section("context", false);
+        sections ~= new Section("context", false, true);
     }
 
     Section top() {
@@ -291,7 +349,7 @@ pure @safe:
         return Tag(type, slice);
     }
 
-    Node parse() {
+    Section parse() {
         size_t last = cur;
         while (cur < templ.length) {
             if (templ[cur..$].startsWith(open)) {
@@ -320,14 +378,12 @@ pure @safe:
 }
 
 unittest {
-    import std.stdio;
     static string repr(string templ) pure {
         auto app = appender!(char[]);
         auto p = Parser(templ);
-        p.parse().prettyPrint(app);
+        p.parse().prettyPrint(app, 0);
         return app.data;
     }
-    debug writeln(repr("{{^sect}}{{#sect2}}{{/sect2}}{{/sect}}"));
     assert(repr("Hello, world!") == 
 `Section(context)
     Text("Hello, world!")
@@ -385,7 +441,7 @@ pure @safe:
     }
 }
 
-string parseAndEmit(C)(string templ) {
+string parseAndEmit(string templ) {
     auto gen = CodeGen();
     gen.putLine("void mustache(C, Output)(C context, ref Output sink) {");
     gen.incIndent();
@@ -398,6 +454,36 @@ string parseAndEmit(C)(string templ) {
     gen.decIndent();
     gen.putLine("}");
     return gen.code.data;
+}
+
+unittest {
+    import std.stdio;
+    string render(alias templ, C)(C value) pure {
+        Appender!(string) app;
+        mustache!templ(value, app);
+        return app.data;
+    }
+    struct C {
+        string value;
+    }
+    struct C2 {
+        C c;
+        int value;
+        double d;
+    }
+    C2 ctx = C2(C(""), 42, 1.5);
+    struct C3 {
+        string val;
+        C[] values;
+    }
+    struct C4 {
+        C3[] cs;
+    }
+    auto c4 = C4([C3("<", [C("A"), C("B")]), C3(">", [C("C"), C("D")])]);
+    assert(render!"{{value}}"(C("OK")) == "OK");
+    assert(render!"{{#.}}{{value}}{{/.}}"([C("1"), C("2")]) == "12");
+    assert(render!"{{^c.value}}{{value}} is the answer. D={{d}}{{/c.value}}"(ctx) == "42 is the answer. D=1.5");
+    assert(render!"{{#cs}}{{val}}:{{#values}}{{value}}.{{/values}}{{/cs}}"(c4) == "&lt;:A.B.&gt;:C.D.");
 }
 
 string escaped(string str) {
