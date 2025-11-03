@@ -3,6 +3,8 @@ module photon.mustache;
 import std.array;
 import std.range.primitives;
 
+pure @safe:
+
 template mustache(alias templ, C) {
     mixin(parseAndEmit!C(templ));
 }
@@ -113,11 +115,30 @@ struct Tag {
     string value;
 }
 
+struct ContextState {
+    import std.conv;
+    int depth;
+
+    string context() => depth == 0 ? "context" : "c"~to!string(depth);
+}
+
 interface Node {
+pure @safe:
+    void prettyPrint(ref Appender!(char[]) output, int indent = 0);
+    void propagateContext(ref ContextState cs) {}
     void compile(ref CodeGen gen);
 }
 
+string variableRef(string context, string path) {
+    if (path == ".") return context;
+    else {
+        return context ~ "." ~ path;
+    }
+}
+
 class Text : Node {
+pure @safe:
+    import std.string;
     string text;
     
     this(string text) {
@@ -125,34 +146,86 @@ class Text : Node {
     }
 
     override void compile(ref CodeGen gen) {
-        gen.emitText(text);
+        gen.putLine("sink.put(\""~escaped(text)~"\");");
+    }
+
+    void prettyPrint(ref Appender!(char[]) output, int indent) {
+        foreach (_; 0..indent) output.put(' ');
+        output.put("Text(\"");
+        output.put(text.replace("\"", "\\\"").replace("\r", "\\r").replace("\n", "\\n"));
+        output.put("\")\n");
     }
 }
 
 class Variable : Node {
+pure @safe:
     string context;
     string varPath;
 
-    this(string context, string varPath) {
-        this.context = context;
+    this(string varPath) {
         this.varPath = varPath;
     }
 
-    override void compile(ref CodeGen gen) {
-        if (varPath == ".") {
+    override void propagateContext(ref ContextState cs) {
+        context = cs.context;
+    }
 
-        }
+    override void compile(ref CodeGen gen) {
+        gen.putLine("htmlEscape(sink, "~variableRef(varPath)~");");
+    }
+
+    void prettyPrint(ref Appender!(char[]) output, int indent) {
+        foreach (_; 0..indent) output.put(' ');
+        output.put("Variable(");
+        output.put(varPath);
+        output.put(")\n");
     }
 }
 
 class Section : Node {
+pure @safe:
     string context;
     string section;
     bool inverted;
     Node[] nodes;
 
-    override void compile(ref CodeGen gen) {
+    this(string section, bool inverted) {
+        this.section = section;
+        this.inverted = inverted;
+    }
 
+    void addNode(Node node) {
+        nodes ~= node;
+    }
+
+    override void compile(ref CodeGen gen) {
+        if (inverted) {
+            gen.put()
+        }
+    }
+
+    void propagateContext(ref ContextState cs) {
+        context = cs.context;
+        cs.depth++;
+        foreach (node; nodes) {
+            node.propagateContext(cs);
+        }
+        cs.depth--;
+    }
+
+    void prettyPrint(ref Appender!(char[]) output, int indent) {
+        foreach (_; 0..indent) output.put(' ');
+        if (inverted) output.put("InvSection(");
+        else output.put("Section(");
+        output.put(section);
+        output.put(")\n");
+        foreach (node; nodes) {
+            node.prettyPrint(output, indent + 4);
+        }
+        foreach (_; 0..indent) output.put(' ');
+        output.put("SectionEnd(");
+        output.put(section);
+        output.put(")\n");
     }
 }
 
@@ -161,8 +234,27 @@ struct Parser {
     string templ;
     string open = "{{", close = "}}";
     string[] stack;
-    Node[] nodes;
+    Section[] sections;
     size_t cur = 0;
+pure @safe:
+    this(string input) {
+        templ = input;
+        sections ~= new Section("context", false);
+    }
+
+    Section top() {
+        return sections[$-1];
+    }
+
+    void push(string section, bool inverted) {
+        Section sec = new Section(section, inverted);
+        top.addNode(sec);
+        sections ~= sec;
+    }
+
+    void pop() {
+        sections = sections[0..$-1];
+    }
 
     void enforce(bool cond, string error) {
         if (!cond) {
@@ -178,7 +270,7 @@ struct Parser {
         auto rest = templ[cur..$].find(close);
         enforce(!rest.empty, "unexpected eof while looking for closing delimeter");
         auto slice = templ[cur..$-rest.length];
-        cur += close.length;
+        cur += slice.length + close.length;
         TagType type;
         if (slice.startsWith("#")) {
             slice = slice[1..$];
@@ -203,19 +295,74 @@ struct Parser {
         size_t last = cur;
         while (cur < templ.length) {
             if (templ[cur..$].startsWith(open)) {
-                if (last != cur) nodes ~= new Text(templ[last..cur]);
+                if (last != cur) top.addNode(new Text(templ[last..cur]));
                 Tag tag = parseTag();
                 last = cur;
+                if (tag.type == TagType.VAR) {
+                    top.addNode(new Variable(tag.value));
+                } else if(tag.type == TagType.SECTION_OPEN) {
+                    push(tag.value, false);
+                } else if(tag.type == TagType.INVERTED_SECTION_OPEN) {
+                    push(tag.value, true);
+                } else if (tag.type == TagType.SECTION_CLOSE) {
+                    enforce(tag.value == top.section, "name mismatch in closing tag, expected `"~top.section~"` found `"~tag.value~"`");
+                    pop();
+                }
             }
             else {
                 cur++;
             }
         }
-        return new Text(templ);
+        if (last != cur) top.addNode(new Text(templ[last..$]));
+        enforce(sections.length == 1, "unclosed section `"~top.section~"`");
+        return top;
     }
 }
 
+unittest {
+    import std.stdio;
+    static string repr(string templ) pure {
+        auto app = appender!(char[]);
+        auto p = Parser(templ);
+        p.parse().prettyPrint(app);
+        return app.data;
+    }
+    debug writeln(repr("{{^sect}}{{#sect2}}{{/sect2}}{{/sect}}"));
+    assert(repr("Hello, world!") == 
+`Section(context)
+    Text("Hello, world!")
+SectionEnd(context)
+`);
+    assert(repr("Hi, {{name}}!") == 
+`Section(context)
+    Text("Hi, ")
+    Variable(name)
+    Text("!")
+SectionEnd(context)
+`);
+    assert(repr("{{#action}} {{var}} {{/action}}\nTEXT") == 
+`Section(context)
+    Section(action)
+        Text(" ")
+        Variable(var)
+        Text(" ")
+    SectionEnd(action)
+    Text("\nTEXT")
+SectionEnd(context)
+`);
+    assert(repr("{{^sect}}{{#sect2}}{{/sect2}}{{/sect}}") == 
+ `Section(context)
+    InvSection(sect)
+        Section(sect2)
+        SectionEnd(sect2)
+    SectionEnd(sect)
+SectionEnd(context)
+`);
+
+}
+
 struct CodeGen {
+pure @safe:
     CodeSink code;
     int indent;
 
@@ -236,12 +383,6 @@ struct CodeGen {
         assert(indent >= INDENT);
         indent -= INDENT;
     }
-
-
-    void emitText(string text) {
-        putLine("sink.put(\""~escaped(text)~"\");");
-    }
-
 }
 
 string parseAndEmit(C)(string templ) {
@@ -250,6 +391,9 @@ string parseAndEmit(C)(string templ) {
     gen.incIndent();
     auto parser = Parser(templ);
     auto tree = parser.parse();
+    ContextState cs;
+    tree.context = "context";
+    tree.propagateContext(cs);
     tree.compile(gen);
     gen.decIndent();
     gen.putLine("}");
